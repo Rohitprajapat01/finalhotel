@@ -1,4 +1,4 @@
-// Gallery images data with Pexels URLs
+// Gallery images data with local paths
 const galleryImages = [
     { url: '12.jpg', title: 'Hotel Exterior', category: 'Garden' },
     { url: 'fttemple.jpg', title: 'Nearby Places', category: 'Temple' },
@@ -16,6 +16,7 @@ let currentImageIndex = 0;
 let heroSlideIndex = 0;
 let heroSlides = [];
 let heroSliderInterval;
+let imageCache = new Map(); // Image cache for better performance
 
 // Throttle function for scroll events
 function throttle(func, limit) {
@@ -42,6 +43,59 @@ function debounce(func, wait) {
         clearTimeout(timeout);
         timeout = setTimeout(later, wait);
     };
+}
+
+// Image loading optimization functions
+function createImageWithFallback(src, alt = '') {
+    return new Promise((resolve, reject) => {
+        // Check cache first
+        if (imageCache.has(src)) {
+            resolve(imageCache.get(src));
+            return;
+        }
+
+        const img = new Image();
+        
+        img.onload = () => {
+            imageCache.set(src, img);
+            img.classList.add('loaded');
+            resolve(img);
+        };
+        
+        img.onerror = () => {
+            console.warn(`Failed to load image: ${src}`);
+            // Create placeholder or hide element
+            img.style.display = 'none';
+            reject(new Error(`Image failed to load: ${src}`));
+        };
+        
+        img.src = src;
+        img.alt = alt;
+    });
+}
+
+// Preload images with retry mechanism
+function preloadImage(src, retries = 3) {
+    return new Promise((resolve, reject) => {
+        const attemptLoad = (attempt) => {
+            createImageWithFallback(src)
+                .then(resolve)
+                .catch(() => {
+                    if (attempt < retries) {
+                        setTimeout(() => attemptLoad(attempt + 1), 1000 * attempt);
+                    } else {
+                        reject(new Error(`Failed to load after ${retries} attempts: ${src}`));
+                    }
+                });
+        };
+        attemptLoad(1);
+    });
+}
+
+// Batch preload images
+function preloadImages(imagePaths) {
+    const promises = imagePaths.map(path => preloadImage(path));
+    return Promise.allSettled(promises);
 }
 
 // Smooth scroll function with offset for fixed header
@@ -80,13 +134,16 @@ function toggleMobileMenu() {
     }
 }
 
-// Gallery Modal Functions
+// Gallery Modal Functions with optimized image loading
 function openModal(index) {
     if (index >= 0 && index < galleryImages.length) {
         currentImageIndex = index;
         updateModalContent();
         galleryModal.classList.add('show');
         document.body.classList.add('modal-open');
+        
+        // Preload adjacent images for smoother navigation
+        preloadAdjacentImages(index);
         
         // Add keyboard event listener
         document.addEventListener('keydown', handleModalKeydown);
@@ -104,21 +161,48 @@ function closeModal() {
 function updateModalContent() {
     if (currentImageIndex >= 0 && currentImageIndex < galleryImages.length) {
         const image = galleryImages[currentImageIndex];
-        modalImage.src = image.url;
-        modalImage.alt = image.title;
-        modalTitle.textContent = image.title;
-        modalCategory.textContent = image.category;
+        
+        // Show loading state
+        modalImage.style.opacity = '0.5';
+        modalTitle.textContent = 'Loading...';
+        modalCategory.textContent = '';
+        
+        // Load image with optimization
+        createImageWithFallback(image.url, image.title)
+            .then(() => {
+                modalImage.src = image.url;
+                modalImage.alt = image.title;
+                modalTitle.textContent = image.title;
+                modalCategory.textContent = image.category;
+                modalImage.style.opacity = '1';
+            })
+            .catch(() => {
+                modalTitle.textContent = 'Image not available';
+                modalCategory.textContent = image.category;
+                modalImage.style.opacity = '1';
+            });
     }
+}
+
+function preloadAdjacentImages(currentIndex) {
+    const prevIndex = (currentIndex - 1 + galleryImages.length) % galleryImages.length;
+    const nextIndex = (currentIndex + 1) % galleryImages.length;
+    
+    // Preload previous and next images
+    preloadImage(galleryImages[prevIndex].url).catch(() => {});
+    preloadImage(galleryImages[nextIndex].url).catch(() => {});
 }
 
 function prevImage() {
     currentImageIndex = (currentImageIndex - 1 + galleryImages.length) % galleryImages.length;
     updateModalContent();
+    preloadAdjacentImages(currentImageIndex);
 }
 
 function nextImage() {
     currentImageIndex = (currentImageIndex + 1) % galleryImages.length;
     updateModalContent();
+    preloadAdjacentImages(currentImageIndex);
 }
 
 // Handle keyboard navigation in modal
@@ -136,7 +220,7 @@ function handleModalKeydown(e) {
     }
 }
 
-// Hero Image Slider
+// Hero Image Slider with optimized loading
 function initHeroSlider() {
     const heroSliderContainer = document.getElementById('heroNewImageSlider');
     if (!heroSliderContainer) return;
@@ -144,6 +228,12 @@ function initHeroSlider() {
     heroSlides = Array.from(heroSliderContainer.querySelectorAll('.new-slide-image'));
     
     if (heroSlides.length > 1) {
+        // Preload all hero images
+        const heroImagePaths = heroSlides.map(slide => slide.src);
+        preloadImages(heroImagePaths).then(() => {
+            console.log('Hero images preloaded');
+        });
+        
         showHeroSlide(heroSlideIndex);
         heroSliderInterval = setInterval(() => {
             heroSlideIndex = (heroSlideIndex + 1) % heroSlides.length;
@@ -166,7 +256,7 @@ const handleScroll = throttle(() => {
     header.classList.toggle('scrolled', scrolled);
 }, 16); // ~60fps
 
-// Intersection Observer for scroll animations
+// Intersection Observer for scroll animations and lazy loading
 function initScrollAnimations() {
     const observerOptions = {
         threshold: 0.1,
@@ -177,6 +267,12 @@ function initScrollAnimations() {
         entries.forEach(entry => {
             if (entry.isIntersecting) {
                 entry.target.classList.add('revealed');
+                
+                // If it's an image, ensure it's loaded
+                if (entry.target.tagName === 'IMG') {
+                    optimizeImageLoading(entry.target);
+                }
+                
                 observer.unobserve(entry.target);
             }
         });
@@ -184,13 +280,34 @@ function initScrollAnimations() {
 
     // Observe elements for animation
     const elementsToAnimate = document.querySelectorAll(
-        'section:not(#home), .room-card, .gallery-item, .info-card, .contact-card, .booking-card'
+        'section:not(#home), .room-card, .gallery-item, .info-card, .contact-card, .booking-card, img[loading="lazy"]'
     );
     
     elementsToAnimate.forEach(el => observer.observe(el));
 }
 
-// Lazy loading for images
+// Optimize image loading for individual images
+function optimizeImageLoading(img) {
+    if (img.complete && img.naturalHeight !== 0) {
+        img.classList.add('loaded');
+        return;
+    }
+    
+    const originalSrc = img.src;
+    img.style.opacity = '0.5';
+    
+    createImageWithFallback(originalSrc, img.alt)
+        .then(() => {
+            img.style.opacity = '1';
+            img.classList.add('loaded');
+        })
+        .catch(() => {
+            img.style.opacity = '0.3';
+            img.alt = 'Image not available';
+        });
+}
+
+// Enhanced lazy loading for images
 function initLazyLoading() {
     const lazyImages = document.querySelectorAll('img[loading="lazy"]');
     
@@ -199,29 +316,33 @@ function initLazyLoading() {
             entries.forEach(entry => {
                 if (entry.isIntersecting) {
                     const img = entry.target;
-                    img.onload = () => img.classList.add('loaded');
+                    optimizeImageLoading(img);
                     imageObserver.unobserve(img);
                 }
             });
+        }, {
+            rootMargin: '50px 0px' // Start loading 50px before the image comes into view
         });
 
         lazyImages.forEach(img => imageObserver.observe(img));
     } else {
         // Fallback for older browsers
-        lazyImages.forEach(img => img.classList.add('loaded'));
+        lazyImages.forEach(img => optimizeImageLoading(img));
     }
 }
 
-// Preload critical images
+// Preload critical images with local paths
 function preloadCriticalImages() {
     const criticalImages = [
-        'https://images.pexels.com/photos/258154/pexels-photo-258154.jpeg',
-        'https://images.pexels.com/photos/271624/pexels-photo-271624.jpeg'
+        'fttemple.jpg',
+        '11.jpg',
+        '12.jpg',
+        'nonac.jpg'
     ];
     
-    criticalImages.forEach(src => {
-        const img = new Image();
-        img.src = src;
+    preloadImages(criticalImages).then((results) => {
+        const successful = results.filter(result => result.status === 'fulfilled').length;
+        console.log(`Preloaded ${successful}/${criticalImages.length} critical images`);
     });
 }
 
@@ -244,9 +365,10 @@ function initFloatingContact() {
     });
 }
 
-// Initialize gallery functionality
+// Initialize gallery functionality with image optimization
 function initGallery() {
     const galleryItems = document.querySelectorAll('.gallery-item');
+    
     galleryItems.forEach((item, index) => {
         item.addEventListener('click', () => openModal(index));
         
@@ -258,6 +380,12 @@ function initGallery() {
                 openModal(index);
             }
         });
+        
+        // Optimize gallery item images
+        const img = item.querySelector('img');
+        if (img) {
+            optimizeImageLoading(img);
+        }
     });
 
     // Modal close on backdrop click
@@ -268,6 +396,13 @@ function initGallery() {
             }
         });
     }
+    
+    // Preload gallery images on hover for better UX
+    galleryItems.forEach((item, index) => {
+        item.addEventListener('mouseenter', () => {
+            preloadImage(galleryImages[index].url).catch(() => {});
+        }, { once: true });
+    });
 }
 
 // Handle window resize
@@ -285,19 +420,58 @@ function logPerformance() {
             setTimeout(() => {
                 const perfData = performance.getEntriesByType('navigation')[0];
                 console.log(`Page load time: ${perfData.loadEventEnd - perfData.loadEventStart}ms`);
+                
+                // Log image cache statistics
+                console.log(`Images cached: ${imageCache.size}`);
             }, 0);
         });
     }
 }
 
-// Error handling for images
+// Enhanced error handling for images
 function handleImageErrors() {
     document.addEventListener('error', (e) => {
         if (e.target.tagName === 'IMG') {
             console.warn('Image failed to load:', e.target.src);
-            e.target.style.display = 'none';
+            
+            // Add error class for styling
+            e.target.classList.add('image-error');
+            
+            // Try to reload the image once after a delay
+            setTimeout(() => {
+                if (!e.target.complete) {
+                    const originalSrc = e.target.src;
+                    e.target.src = '';
+                    e.target.src = originalSrc;
+                }
+            }, 2000);
         }
     }, true);
+}
+
+// Image loading progress indicator
+function showImageLoadingProgress() {
+    const totalImages = document.querySelectorAll('img').length;
+    let loadedImages = 0;
+    
+    const updateProgress = () => {
+        loadedImages++;
+        const progress = (loadedImages / totalImages) * 100;
+        console.log(`Image loading progress: ${Math.round(progress)}%`);
+        
+        if (loadedImages === totalImages) {
+            console.log('All images loaded');
+        }
+    };
+    
+    document.querySelectorAll('img').forEach(img => {
+        if (img.complete) {
+            updateProgress();
+        } else {
+            img.addEventListener('load', updateProgress, { once: true });
+            img.addEventListener('error', updateProgress, { once: true });
+        }
+    });
 }
 
 // Main initialization function
@@ -319,8 +493,13 @@ function init() {
     initLazyLoading();
     initFloatingContact();
     initGallery();
-    preloadCriticalImages();
     handleImageErrors();
+    
+    // Preload critical images after initial load
+    setTimeout(() => {
+        preloadCriticalImages();
+        showImageLoadingProgress();
+    }, 1000);
     
     // Set initial scroll state
     setTimeout(handleScroll, 100);
@@ -334,7 +513,7 @@ function init() {
     }
 
     // Performance monitoring in development
-    if (window.location.hostname === 'localhost') {
+    if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
         logPerformance();
     }
 
@@ -367,4 +546,22 @@ window.addEventListener('beforeunload', () => {
     if (heroSliderInterval) {
         clearInterval(heroSliderInterval);
     }
+    
+    // Clear image cache to free memory
+    imageCache.clear();
 });
+
+// Network status monitoring for image loading optimization
+if ('navigator' in window && 'onLine' in navigator) {
+    window.addEventListener('online', () => {
+        console.log('Network connection restored');
+        // Retry failed image loads
+        document.querySelectorAll('img.image-error').forEach(img => {
+            optimizeImageLoading(img);
+        });
+    });
+    
+    window.addEventListener('offline', () => {
+        console.log('Network connection lost');
+    });
+}
