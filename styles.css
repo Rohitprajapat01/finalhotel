@@ -70,7 +70,7 @@ html {
 }
 
 .logo h1 {
-    font-size: 1.5rem;
+    font-size: 1.1rem;
     font-weight: 700;
     color: white;
     transition: color 0.3s ease;
@@ -317,7 +317,7 @@ html {
 }
 
 .hero-title {
-    font-size: clamp(2.5rem, 5vw, 4.5rem);
+    font-size: clamp(2rem, 5vw, 4rem);
     font-weight: 800;
     margin-bottom: 1rem;
     animation: fadeInUp 1s ease 0.3s both;
@@ -326,7 +326,7 @@ html {
 }
 
 .hero-subtitle {
-    font-size: clamp(1rem, 2vw, 1.2rem);
+    font-size: clamp(.9rem, 2vw, 1.1rem);
     margin-bottom: 1rem;
     animation: fadeInUp 1s ease 0.4s both;
     color: rgb(255, 255, 255);
